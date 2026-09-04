@@ -1,0 +1,25 @@
+{
+  "name": "ogr-node-core",
+  "version": "0.1.0",
+  "description": "Platform-independent OpenGardenRack node (I2C slave) protocol engine: register map, EP_SELECT paging, CRC-8/SMBUS PEC, enumeration state machine. Pair with an ogr-node-hal-* package for a given MCU.",
+  "keywords": ["i2c", "opengardenrack", "iot", "sensors", "actuators"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vvapnik/ogr-node-core.git"
+  },
+  "authors": [
+    {
+      "name": "vvapnik",
+      "url": "https://github.com/vvapnik"
+    }
+  ],
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<*.cpp>", "+<*.h>"]
+  },
+  "export": {
+    "include": ["src", "library.json", "library.properties", "README.md"]
+  }
+}
