@@ -74,10 +74,12 @@ public:
   // kNoPlantUid, writes are silently ignored (spec §4.1, non-anchor modules).
   void begin(IOgrTransport &transport, IOgrGpio &gpio);
 
-  // Call every loop() iteration. Drives the EN_IN wait state, flushes a
-  // pending PLANT_UID save to storage (kept off the transport's call path
-  // since a flash/EEPROM write can take milliseconds), and lets the
-  // transport do any deferred work it needs (see IOgrTransport::poll()).
+  // Call every loop() iteration. Drives the EN_IN wait state; applies a
+  // pending transport setAddress()/end() from SET_ADDR/RESTART (kept off the
+  // ISR call path — see the member comments below); flushes a pending
+  // PLANT_UID save to storage (kept off that same path since a flash/EEPROM
+  // write can take milliseconds); and lets the transport do any deferred
+  // work it needs (see IOgrTransport::poll()).
   void update();
 
   void setStatus(Status s) { status_ = s; }
@@ -125,6 +127,17 @@ private:
   uint32_t plantUid_ = kNoPlantUid;
   bool plantUidSupported_ = false;
   bool plantUidDirty_ = false;
+
+  // SET_ADDR/RESTART reconfigure the transport itself (setAddress()/end()),
+  // which on a software-driven peripheral (e.g. AVR USI) means reinitializing
+  // the very interrupt state machine that's still on the call stack invoking
+  // onI2cWrite() right now — calling back into it synchronously here has been
+  // observed to wedge the peripheral. So these two calls are deferred to the
+  // next update() (plain loop() context, no ISR involved), same as the
+  // PLANT_UID storage flush above.
+  bool transportAddressPending_ = false;
+  uint8_t pendingTransportAddress_ = 0;
+  bool transportEndPending_ = false;
 
   // Collaborators (not owned)
   IOgrTransport *transport_ = nullptr;

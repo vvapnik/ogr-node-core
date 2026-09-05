@@ -110,7 +110,8 @@ void test_set_addr_assigns_and_raises_en_out() {
   buildWriteFrame(kDefaultAddress, static_cast<uint8_t>(Reg::SetAddr), data, 1, frame);
   transport.write(frame, 3);
 
-  TEST_ASSERT_EQUAL_UINT8(0x2A, node.address());
+  TEST_ASSERT_EQUAL_UINT8(0x2A, node.address()); // updated immediately
+  node.update(); // transport_->setAddress() is deferred to here — see OgrNode.h
   TEST_ASSERT_EQUAL_UINT8(0x2A, transport.currentAddress);
   TEST_ASSERT_TRUE(gpio.enOut);
   TEST_ASSERT_EQUAL_INT(1, enumeratedCalls);
@@ -304,14 +305,55 @@ void test_restart_returns_to_waiting_for_en_in() {
   TEST_ASSERT_EQUAL_INT(1, restartCalls);
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RestartType::Soft), lastRestartType);
   TEST_ASSERT_FALSE(gpio.enOut);
-  TEST_ASSERT_FALSE(transport.listening);
-  TEST_ASSERT_EQUAL_UINT8(0, node.address());
+  TEST_ASSERT_EQUAL_UINT8(0, node.address()); // updated immediately; transport_->end() itself is deferred
 
   // EN_IN is still high (this module's own restart doesn't affect its own
-  // input), so the very next update() re-enumerates it at the default address.
+  // input), so the very next update() both flushes the deferred transport
+  // end() *and* immediately re-enumerates at the default address again, in
+  // that one call — matching how a module whose EN_IN never actually
+  // dropped reappears on the bus right away (spec §3.4).
   node.update();
   TEST_ASSERT_TRUE(transport.listening);
   TEST_ASSERT_EQUAL_UINT8(kDefaultAddress, node.address());
+}
+
+// Regression test: SET_ADDR/RESTART must never touch the transport
+// (setAddress()/end()) synchronously from onI2cWrite() — that's the ISR call
+// path on real hardware, and a software-driven peripheral (e.g. AVR USI)
+// reinitializing its own interrupt state machine while still inside the
+// interrupt that triggered it has been observed to wedge it permanently.
+// Both calls must land only from update() (plain loop() context). See the
+// member comments in OgrNode.h.
+void test_set_addr_and_restart_defer_transport_reconfig_to_update() {
+  OgrNode node(ClassId::Custom, false);
+  node.begin(transport, gpio, storage);
+  gpio.enIn = true;
+  node.update();
+
+  uint8_t data[] = {0x2A};
+  uint8_t frame[kMaxWriteFrame];
+  buildWriteFrame(kDefaultAddress, static_cast<uint8_t>(Reg::SetAddr), data, 1, frame);
+  transport.write(frame, 3); // stands in for the ISR-driven onI2cWrite call
+
+  // address_ (pure in-memory state) updates immediately...
+  TEST_ASSERT_EQUAL_UINT8(0x2A, node.address());
+  // ...but the transport itself must not have been touched yet.
+  TEST_ASSERT_EQUAL_UINT8(kDefaultAddress, transport.currentAddress);
+
+  node.update(); // only now is it safe
+  TEST_ASSERT_EQUAL_UINT8(0x2A, transport.currentAddress);
+
+  uint8_t restartData[] = {static_cast<uint8_t>(RestartType::Soft)};
+  uint8_t restartFrame[kMaxWriteFrame];
+  buildWriteFrame(0x2A, static_cast<uint8_t>(Reg::Restart), restartData, 1, restartFrame);
+  transport.write(restartFrame, 3);
+
+  TEST_ASSERT_EQUAL_UINT8(0, node.address());
+  TEST_ASSERT_TRUE(transport.listening); // transport_->end() not called yet
+
+  gpio.enIn = false; // keep this update() call to just the deferred end()
+  node.update();
+  TEST_ASSERT_FALSE(transport.listening);
 }
 
 int main(int, char **) {
@@ -325,5 +367,6 @@ int main(int, char **) {
   RUN_TEST(test_plant_uid_persists_via_storage_and_defers_flush);
   RUN_TEST(test_no_storage_overload_ignores_plant_uid);
   RUN_TEST(test_restart_returns_to_waiting_for_en_in);
+  RUN_TEST(test_set_addr_and_restart_defer_transport_reconfig_to_update);
   return UNITY_END();
 }

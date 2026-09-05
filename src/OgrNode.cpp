@@ -62,6 +62,18 @@ void OgrNode::update() {
     return;
   }
 
+  // Must run before anything else touches the transport: see the member
+  // comments in OgrNode.h for why these can't happen synchronously inside
+  // onI2cWrite() (the ISR call path for SET_ADDR/RESTART).
+  if (transportAddressPending_) {
+    transportAddressPending_ = false;
+    transport_->setAddress(pendingTransportAddress_);
+  }
+  if (transportEndPending_) {
+    transportEndPending_ = false;
+    transport_->end();
+  }
+
   if (lifecycle_ == Lifecycle::WaitingForEnIn) {
     if (gpio_->readEnIn()) {
       address_ = kDefaultAddress;
@@ -110,7 +122,7 @@ void OgrNode::doRestart(RestartType type) {
     restartCb_(type);
   }
   gpio_->writeEnOut(false);
-  transport_->end();
+  transportEndPending_ = true; // transport_->end() deferred to update() — see OgrNode.h
   lifecycle_ = Lifecycle::WaitingForEnIn;
   address_ = 0;
   epSelect_ = 0;
@@ -119,7 +131,8 @@ void OgrNode::doRestart(RestartType type) {
 
 void OgrNode::applySetAddr(uint8_t newAddr) {
   address_ = newAddr;
-  transport_->setAddress(newAddr);
+  pendingTransportAddress_ = newAddr;
+  transportAddressPending_ = true; // transport_->setAddress() deferred to update() — see OgrNode.h
   gpio_->writeEnOut(true);
   lifecycle_ = Lifecycle::Assigned;
   epSelect_ = 0;
