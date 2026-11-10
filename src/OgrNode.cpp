@@ -57,7 +57,18 @@ void OgrNode::begin(IOgrTransport &transport, IOgrGpio &gpio) {
   status_ = Status::Ok;
 }
 
-void OgrNode::update() {
+void OgrNode::update() { updateImpl(false, 0); }
+
+void OgrNode::update(uint32_t nowMs) { updateImpl(true, nowMs); }
+
+bool OgrNode::readEnIn(bool timed, uint32_t nowMs) const {
+  if (timed && nowMs < enInHoldMs_) {
+    return false;
+  }
+  return gpio_->readEnIn();
+}
+
+void OgrNode::updateImpl(bool timed, uint32_t nowMs) {
   if (!transport_) {
     return;
   }
@@ -75,17 +86,39 @@ void OgrNode::update() {
   }
 
   if (lifecycle_ == Lifecycle::WaitingForEnIn) {
-    if (gpio_->readEnIn()) {
+    if (readEnIn(timed, nowMs)) {
       address_ = kDefaultAddress;
       epSelect_ = 0;
       lifecycle_ = Lifecycle::Unassigned;
       transport_->begin(*this, kDefaultAddress);
     }
+  } else if (lifecycle_ == Lifecycle::Unassigned && !readEnIn(timed, nowMs)) {
+    // EN_IN dropped before SET_ADDR: the HIGH that put us on 0x08 was not a
+    // real enable (e.g. a floating EN line read HIGH at power-up) — leave
+    // the default address instead of squatting on it, or the real
+    // next-in-chain module collides with us there and neither can be
+    // registered. Found on the bench: a cold-booted light module sat on
+    // 0x08 while the plant container below it was still unregistered.
+    transport_->end();
+    lifecycle_ = Lifecycle::WaitingForEnIn;
+    address_ = 0;
+    epSelect_ = 0;
   }
 
   if (plantUidDirty_ && plantUidSupported_) {
-    storage_->savePlantUid(plantUid_);
-    plantUidDirty_ = false;
+    bool settled = true;
+    if (timed) {
+      uint8_t seq = plantUidWriteSeq_;
+      if (seq != plantUidSeenSeq_) {
+        plantUidSeenSeq_ = seq;
+        plantUidLastWriteMs_ = nowMs;
+      }
+      settled = nowMs - plantUidLastWriteMs_ >= kPlantUidSettleMs;
+    }
+    if (settled) {
+      plantUidDirty_ = false;
+      storage_->savePlantUid(plantUid_);
+    }
   }
 
   transport_->poll();
@@ -112,6 +145,7 @@ void OgrNode::setPlantUidByte(uint8_t byteIndex, uint8_t value) {
   uint32_t mask = ~(static_cast<uint32_t>(0xFFu) << (byteIndex * 8));
   plantUid_ = (plantUid_ & mask) | (static_cast<uint32_t>(value) << (byteIndex * 8));
   plantUidDirty_ = true;
+  plantUidWriteSeq_ = static_cast<uint8_t>(plantUidWriteSeq_ + 1);
   if (plantUidCb_) {
     plantUidCb_(plantUid_);
   }

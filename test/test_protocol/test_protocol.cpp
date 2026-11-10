@@ -96,6 +96,49 @@ void test_waits_for_en_in_before_listening() {
   TEST_ASSERT_EQUAL_UINT8(kDefaultAddress, node.address());
 }
 
+// EN_IN dropping before SET_ADDR (a spurious HIGH, e.g. a floating EN line
+// at power-up) takes the node back off 0x08 so it can't collide there with
+// the module that is really next in the chain.
+void test_en_in_drop_before_set_addr_leaves_default_address() {
+  OgrNode node(ClassId::Custom, false);
+  node.begin(transport, gpio, storage);
+
+  gpio.enIn = true;
+  node.update();
+  TEST_ASSERT_TRUE(transport.listening);
+
+  gpio.enIn = false;
+  node.update();
+  TEST_ASSERT_FALSE(transport.listening);
+  TEST_ASSERT_EQUAL_UINT8(0, node.address());
+  TEST_ASSERT_FALSE(gpio.enOut);
+
+  gpio.enIn = true; // a real enable later still registers normally
+  node.update();
+  TEST_ASSERT_TRUE(transport.listening);
+  TEST_ASSERT_EQUAL_UINT8(kDefaultAddress, node.address());
+}
+
+// Once assigned, EN_IN no longer matters (only RESTART takes a node off its
+// address) — dropping it must not unregister the node.
+void test_en_in_drop_after_set_addr_keeps_address() {
+  OgrNode node(ClassId::Custom, false);
+  node.begin(transport, gpio, storage);
+  gpio.enIn = true;
+  node.update();
+
+  uint8_t data[] = {0x2A};
+  uint8_t frame[3];
+  buildWriteFrame(kDefaultAddress, static_cast<uint8_t>(Reg::SetAddr), data, 1, frame);
+  transport.write(frame, sizeof(frame));
+  node.update();
+
+  gpio.enIn = false;
+  node.update();
+  TEST_ASSERT_TRUE(transport.listening);
+  TEST_ASSERT_EQUAL_UINT8(0x2A, node.address());
+}
+
 // SET_ADDR moves the node off 0x08, raises EN_OUT, and fires onEnumerated —
 // spec §3.1 step 3.
 void test_set_addr_assigns_and_raises_en_out() {
@@ -261,6 +304,58 @@ void test_plant_uid_persists_via_storage_and_defers_flush() {
   TEST_ASSERT_EQUAL_HEX8(0x78, outBuf[0]);
 }
 
+// update(nowMs): the UID is flushed once, after the four byte writes have
+// gone quiet for kPlantUidSettleMs — not after the first byte, which on the
+// bench persisted a truncated 0xFFFFFFxx UID.
+void test_timed_update_flushes_plant_uid_once_after_settle() {
+  OgrNode node(ClassId::PlantContainer, true);
+  node.begin(transport, gpio, storage);
+  gpio.enIn = true;
+  node.update(1000);
+  uint8_t addrData[] = {0x13};
+  uint8_t addrFrame[kMaxWriteFrame];
+  buildWriteFrame(kDefaultAddress, static_cast<uint8_t>(Reg::SetAddr), addrData, 1, addrFrame);
+  transport.write(addrFrame, 3);
+  node.update(1000);
+
+  const uint8_t bytes[4] = {0x0F, 0x8A, 0xD4, 0x9D};
+  uint32_t now = 2000;
+  for (uint8_t i = 0; i < 4; ++i) {
+    uint8_t b[] = {bytes[i]};
+    uint8_t f[kMaxWriteFrame];
+    buildWriteFrame(0x13, static_cast<uint8_t>(Reg::PlantUid0) + i, b, 1, f);
+    transport.write(f, 3);
+    node.update(now);
+    now += 10; // bytes arrive a few ms apart
+    TEST_ASSERT_EQUAL_INT(0, storage.saveCount);
+  }
+
+  node.update(now + OgrNode::kPlantUidSettleMs - 20);
+  TEST_ASSERT_EQUAL_INT(0, storage.saveCount); // still within the settle window
+  node.update(now + OgrNode::kPlantUidSettleMs);
+  TEST_ASSERT_EQUAL_INT(1, storage.saveCount);
+  TEST_ASSERT_EQUAL_HEX32(0x9DD48A0F, storage.stored);
+  node.update(now + 2 * OgrNode::kPlantUidSettleMs);
+  TEST_ASSERT_EQUAL_INT(1, storage.saveCount); // no repeat save
+}
+
+// setEnInHoldMs(): EN_IN is ignored until nowMs reaches the hold.
+void test_timed_update_holds_en_in_after_boot() {
+  OgrNode node(ClassId::Custom, false);
+  node.setEnInHoldMs(6000);
+  node.begin(transport, gpio, storage);
+  gpio.enIn = true;
+
+  node.update(100);
+  node.update(5999);
+  TEST_ASSERT_FALSE(transport.listening);
+  TEST_ASSERT_EQUAL_UINT8(0, node.address());
+
+  node.update(6000);
+  TEST_ASSERT_TRUE(transport.listening);
+  TEST_ASSERT_EQUAL_UINT8(kDefaultAddress, node.address());
+}
+
 // Non-anchor modules opting out of UID storage (2-arg begin()) always report
 // NO_UID and silently ignore writes — spec §4.1.
 void test_no_storage_overload_ignores_plant_uid() {
@@ -359,12 +454,16 @@ void test_set_addr_and_restart_defer_transport_reconfig_to_update() {
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_waits_for_en_in_before_listening);
+  RUN_TEST(test_en_in_drop_before_set_addr_leaves_default_address);
+  RUN_TEST(test_en_in_drop_after_set_addr_keeps_address);
   RUN_TEST(test_set_addr_assigns_and_raises_en_out);
   RUN_TEST(test_bad_pec_sets_status_error_and_is_discarded);
   RUN_TEST(test_ep_select_paging_and_invalid_index);
   RUN_TEST(test_ep_data_read_packs_little_endian);
   RUN_TEST(test_ep_data_write_invokes_callback);
   RUN_TEST(test_plant_uid_persists_via_storage_and_defers_flush);
+  RUN_TEST(test_timed_update_flushes_plant_uid_once_after_settle);
+  RUN_TEST(test_timed_update_holds_en_in_after_boot);
   RUN_TEST(test_no_storage_overload_ignores_plant_uid);
   RUN_TEST(test_restart_returns_to_waiting_for_en_in);
   RUN_TEST(test_set_addr_and_restart_defer_transport_reconfig_to_update);

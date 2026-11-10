@@ -82,6 +82,26 @@ public:
   // work it needs (see IOgrTransport::poll()).
   void update();
 
+  // Same as update(), plus two time-based behaviors. Pass any monotonic
+  // millisecond counter that starts near 0 at boot (Arduino millis() etc.):
+  //  - PLANT_UID is flushed to storage only once writes have been quiet for
+  //    kPlantUidSettleMs. The master writes the UID as four separate byte
+  //    transactions; flushing after each one meant a flash erase (which
+  //    stalls the CPU for milliseconds on parts that execute from flash,
+  //    e.g. CH32V003) right while the next bytes arrived — the ISR missed
+  //    them and a truncated UID (0xFFFFFFxx) was persisted. Found on the
+  //    bench. Also one erase per UID instead of four.
+  //  - EN_IN is ignored until nowMs reaches setEnInHoldMs() — see there.
+  void update(uint32_t nowMs);
+
+  // Startup bus hold: treat EN_IN as low for the first `ms` milliseconds
+  // after boot (only honored by update(uint32_t)). Lets a module that powers
+  // up before the head module / its neighbours stay off the bus until the
+  // rack has settled. Default 0 (no hold).
+  void setEnInHoldMs(uint32_t ms) { enInHoldMs_ = ms; }
+
+  static constexpr uint32_t kPlantUidSettleMs = 500;
+
   void setStatus(Status s) { status_ = s; }
   Status status() const { return status_; }
 
@@ -98,6 +118,8 @@ public:
 private:
   enum class Lifecycle : uint8_t { WaitingForEnIn, Unassigned, Assigned };
 
+  void updateImpl(bool timed, uint32_t nowMs);
+  bool readEnIn(bool timed, uint32_t nowMs) const;
   uint8_t writePec(uint8_t reg, const uint8_t *data, uint8_t len) const;
   uint8_t readPec(uint8_t reg, const uint8_t *data, uint8_t len) const;
   void doRestart(RestartType type);
@@ -126,7 +148,14 @@ private:
   // synchronously; writes stage here and get flushed from update().
   uint32_t plantUid_ = kNoPlantUid;
   bool plantUidSupported_ = false;
-  bool plantUidDirty_ = false;
+  volatile bool plantUidDirty_ = false;
+  // Bumped on every PLANT_UID byte write (ISR side); update(nowMs) watches it
+  // to know when writes have gone quiet. See update(uint32_t).
+  volatile uint8_t plantUidWriteSeq_ = 0;
+  uint8_t plantUidSeenSeq_ = 0;
+  uint32_t plantUidLastWriteMs_ = 0;
+
+  uint32_t enInHoldMs_ = 0;
 
   // SET_ADDR/RESTART reconfigure the transport itself (setAddress()/end()),
   // which on a software-driven peripheral (e.g. AVR USI) means reinitializing

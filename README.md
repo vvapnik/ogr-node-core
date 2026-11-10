@@ -71,3 +71,7 @@ required) using PlatformIO's `native` platform + Unity, with mock
 ```sh
 pio test -e native
 ```
+
+---
+
+Development is assisted by [Claude Code](https://claude.com/claude-code) (Anthropic).
