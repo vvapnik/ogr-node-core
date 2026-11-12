@@ -1,0 +1,118 @@
+{
+  "takesix": "1.0",
+  "title": "ogr-node-core",
+  "description": "Platform-independent OGR node engine: the sketch on top, hardware only through three HAL interfaces",
+  "blocks": [
+    {
+      "id": "sketch",
+      "at": "A1:C1",
+      "icon": "✍",
+      "title": "Your sketch",
+      "description": "Endpoints, begin(), update()",
+      "details": "How a module firmware uses the library (README, Usage):\n\n1. Create `OgrNode node(ClassId, isAnchor)`.\n2. In `setup()`, call `addEndpoint(type, mode, format, onRead, onWrite, ctx)` once per endpoint; call order fixes the `EP_SELECT` index.\n3. Call `node.begin(transport, gpio, storage)` with objects from an `ogr-node-hal-*` package (or `begin(transport, gpio)` without PLANT_UID support).\n4. Call `node.update()` (or `update(millis())`) every `loop()`.\n\nOptional hooks: `onRestart`, `onPlantUidChanged`, `onEnumerated`. They may run in ISR context: keep them fast."
+    },
+    {
+      "id": "engine",
+      "at": "A3:C3",
+      "icon": "⬡",
+      "title": "OgrNode engine",
+      "description": "src/OgrNode.h, OgrNode.cpp",
+      "children": [
+        {
+          "id": "engine-lifecycle",
+          "at": "A1:C2",
+          "icon": "🪜",
+          "title": "Enumeration lifecycle",
+          "description": "update(): EN_IN wait → 0x08 → assigned",
+          "details": "Source: `src/OgrNode.cpp` `updateImpl()`, `applySetAddr()`, `doRestart()`\n\n- States: `WaitingForEnIn` → `Unassigned` (listening on `0x08`) → `Assigned`.\n- `SET_ADDR` assigns the address and raises `EN_OUT`; `RESTART` drops back to `WaitingForEnIn`.\n- If EN_IN drops before `SET_ADDR`, the node leaves the bus again; after `SET_ADDR` it keeps its address.\n- `setEnInHoldMs()` (with `update(nowMs)`) ignores EN_IN for a while after boot.\n- Transport `setAddress()`/`end()` are **deferred to `update()`**: calling them from the ISR path wedged the AVR USI peripheral."
+        },
+        {
+          "id": "engine-registers",
+          "at": "D1:F2",
+          "icon": "▦",
+          "title": "Register access",
+          "description": "onI2cWrite / onI2cRead, PEC check",
+          "details": "Source: `src/OgrNode.cpp` `onI2cWrite()`, `onI2cRead()`, `writePec()`, `readPec()`\n\n- Implements `IOgrProtocolSink`: the transport hands over a whole buffered frame.\n- Writes: verify the PEC; on mismatch discard and set `STATUS = Error` (always ACKed, spec §5.3).\n- Reads: fill the system block, descriptor window (`0x20`, 3 bytes) or data window (`0x40`, 4 bytes, little-endian), then append the PEC.\n- An `EP_SELECT` index ≥ `EP_COUNT` is ignored and sets `STATUS = Error`."
+        },
+        {
+          "id": "engine-endpoints",
+          "at": "A4:C5",
+          "icon": "⇄",
+          "title": "Endpoints",
+          "description": "Fixed array, live callbacks",
+          "details": "Source: `src/OgrNode.h` `EndpointDef`, `addEndpoint()`\n\n- Up to `OGR_MAX_ENDPOINTS` (default 8, build flag), no dynamic allocation.\n- Values are never cached: `onRead`/`onWrite` are called live from the data-window transaction.\n- `ctx` lets one callback serve several endpoints."
+        },
+        {
+          "id": "engine-plantuid",
+          "at": "D4:F5",
+          "icon": "🪴",
+          "title": "PLANT_UID",
+          "description": "RAM copy, flushed from update()",
+          "details": "Source: `src/OgrNode.cpp` `setPlantUidByte()`, flush in `updateImpl()`\n\n- Always kept in RAM, so reads never touch storage.\n- Byte writes stage in RAM; the flush to `IOgrStorage` happens in `update()`, never on the transport path.\n- With `update(nowMs)` the flush waits until writes have been quiet for `kPlantUidSettleMs` (500 ms): flushing after each of the four byte writes stalled the CPU on CH32V003 and persisted a truncated UID.\n- Without storage (`begin(transport, gpio)`), reads return `0xFFFFFFFF` and writes are ignored."
+        }
+      ]
+    },
+    {
+      "id": "interfaces",
+      "at": "A5:C5",
+      "icon": "🧩",
+      "title": "HAL interfaces",
+      "description": "Transport, GPIO, storage",
+      "children": [
+        {
+          "id": "if-transport",
+          "at": "A1:C2",
+          "icon": "↔",
+          "title": "IOgrTransport",
+          "description": "src/OgrTransport.h: I2C slave",
+          "details": "Source: `src/OgrTransport.h`\n\n- `begin(sink, address)`, `setAddress(address)`, `end()`, `poll()`.\n- Delivers each completed write frame to `IOgrProtocolSink::onI2cWrite()` and asks `onI2cRead(reg, …)` to fill the read response.\n- Needs only buffered frames, no per-byte ACK/NACK control.\n- `poll()` is for transports that do deferred work outside the ISR (e.g. AVR USI)."
+        },
+        {
+          "id": "if-gpio",
+          "at": "D1:F2",
+          "icon": "⏚",
+          "title": "IOgrGpio",
+          "description": "src/OgrGpio.h: EN_IN / EN_OUT",
+          "details": "Source: `src/OgrGpio.h`\n\n- `begin()`, `readEnIn()`, `writeEnOut(high)`.\n- Plain polled digital I/O; no interrupts needed."
+        },
+        {
+          "id": "if-storage",
+          "at": "A4:C5",
+          "icon": "💾",
+          "title": "IOgrStorage",
+          "description": "src/OgrStorage.h: PLANT_UID in NVS",
+          "details": "Source: `src/OgrStorage.h`\n\n- `loadPlantUid(uid)`, `savePlantUid(uid)`. Mandatory for anchor modules.\n- `NullStorage`: stub for non-anchor modules without UID support."
+        },
+        {
+          "id": "if-implementations",
+          "at": "D4:F5",
+          "icon": "📦",
+          "title": "Implementations",
+          "description": "In the ogr-node-hal-* repos",
+          "details": "This repo has no hardware code. Implementations of the three interfaces live in separate packages:\n\n- `ogr-node-hal-avr` — ATmega328 (TWI), ATtiny85 (USI)\n- `ogr-node-hal-esp32-arduino` — ESP32 family on Arduino `Wire`\n- `ogr-node-hal-esp32` — ESP-IDF\n- `ogr-node-hal-ch32v003` — CH32V003\n\nFor host tests, `test/mocks/MockHal.h` implements all three."
+        }
+      ]
+    },
+    {
+      "id": "types",
+      "at": "E3:F3",
+      "icon": "🔢",
+      "title": "Constants",
+      "description": "Registers, IDs",
+      "details": "Sources: `src/OgrTypes.h`, `src/OgrCrc8.h`\n\n- `OgrTypes.h` mirrors spec docs 04, 06 and 07: register addresses (`Reg`), `Status`, `RestartType`, `SYS_FLAGS` bits, `ClassId`, `TypeId`, `Mode`, `Format`, default address `0x08`, protocol version `0x10`, frame size limits.\n- `OgrCrc8.h`: CRC-8/SMBUS (poly `0x07`, init `0x00`) used for the PEC byte.\n\nWhen the spec changes, these two files change first."
+    },
+    {
+      "id": "tests",
+      "at": "E5:F5",
+      "icon": "🧪",
+      "title": "Host tests",
+      "description": "Native, Unity",
+      "details": "Sources: `test/test_protocol/test_protocol.cpp`, `test/test_crc8/test_crc8.cpp`, `test/mocks/MockHal.h`, `platformio.ini`\n\n- Run on the host with PlatformIO `native` + Unity: `pio test -e native`. No board or toolchain needed.\n- `MockHal.h` fakes transport, GPIO and storage.\n- Covered: EN_IN wait and drop, `SET_ADDR`, bad PEC, `EP_SELECT` paging, little-endian data, write callbacks, PLANT_UID deferred and settled flush, EN_IN hold, no-storage mode, `RESTART`, deferred transport reconfiguration.\n- `test_crc8` checks the CRC against known vectors."
+    }
+  ],
+  "links": [
+    { "from": "sketch", "to": "engine", "label": "addEndpoint, update" },
+    { "from": "engine", "to": "interfaces", "label": "calls" },
+    { "from": "tests", "to": "interfaces", "label": "mocks", "style": "dashed" }
+  ]
+}

@@ -40,7 +40,8 @@ void loop() {
 ```
 
 See [OgrNode.h](src/OgrNode.h) for the full API (restart/enumeration hooks,
-PLANT_UID, status).
+PLANT_UID, status). A zoomable map of the library's parts is in
+[`ARCHITECTURE.takesix.json`](ARCHITECTURE.takesix.json) (a TakeSix diagram).
 
 ## Design notes
 
