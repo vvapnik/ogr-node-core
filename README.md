@@ -12,7 +12,8 @@ defined here; a HAL package supplies the implementations for a given MCU:
 | Package | Targets |
 |---|---|
 | [ogr-node-hal-avr](https://github.com/vvapnik/ogr-node-hal-avr) | ATmega328 (TWI), ATtiny85 (USI) |
-| ogr-node-hal-esp32 | ESP32 / ESP32-S3 |
+| [ogr-node-hal-esp32-arduino](https://github.com/vvapnik/ogr-node-hal-esp32-arduino) | ESP32 / ESP32-S3 / ESP32-C3, on Arduino `Wire` |
+| ogr-node-hal-esp32 | ESP32 / ESP32-S3 / ESP32-C3, on native ESP-IDF |
 | ogr-node-hal-ch32v003 | CH32V003 |
 
 ## Usage
